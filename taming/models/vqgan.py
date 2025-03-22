@@ -6,7 +6,7 @@ from taming.modules.diffusionmodules.model import Encoder, Decoder
 from taming.modules.vqvae.quantize import VectorQuantizer2 as VectorQuantizer
 from taming.modules.vqvae.quantize import GumbelQuantize
 from taming.modules.vqvae.quantize import EMAVectorQuantizer
-
+from taming.modules.vqvae.quantize import RQBottleneck
 class VQModel(pl.LightningModule):
     def __init__(self,
                  args,
@@ -15,11 +15,14 @@ class VQModel(pl.LightningModule):
                  ):
         super().__init__()
         # self.image_key = image_key
-        self.encoder = Encoder(args, z_channels=args.latent_dim, attn_resolutions=[14]) # attention维度是img_size/16,因为有4次下采样
-        self.decoder = Decoder(args,z_channels=args.latent_dim, attn_resolutions=[14])
+        self.encoder = Encoder(args, ch=64, z_channels=args.latent_dim,ch_mult=[1,2,4,8,16], attn_resolutions=[15],resamp_with_conv=False) # attention维度是img_size/16,因为有4次下采样
+        self.decoder = Decoder(args, ch=64, z_channels=args.latent_dim,ch_mult=[1,2,4,8,16], attn_resolutions=[15],resamp_with_conv=False)
         # self.loss = instantiate_from_config(lossconfig)
-        self.quantize = VectorQuantizer(args.num_codebook_vectors, args.latent_dim, beta=0.25,
-                                        remap=remap, sane_index_shape=sane_index_shape)
+        # self.quantize = VectorQuantizer(args.num_codebook_vectors, e_dim=args.latent_dim, beta=0.25,
+        #                                 remap=remap, sane_index_shape=sane_index_shape)
+        # self.quantize = RQBottleneck(latent_shape=[15, 15, args.latent_dim], code_shape=[15, 15, 2],
+        #                              n_embed=args.num_codebook_vectors, shared_codebook=True)
+        self.quantize = EMAVectorQuantizer(n_embed=args.num_codebook_vectors, embedding_dim=args.latent_dim, beta=1, remap=remap)
         self.quant_conv = torch.nn.Conv2d(args.latent_dim, args.latent_dim, 1)
         self.post_quant_conv = torch.nn.Conv2d(args.latent_dim, args.latent_dim, 1)
         # if ckpt_path is not None:
@@ -31,7 +34,7 @@ class VQModel(pl.LightningModule):
         # if monitor is not None:
         #     self.monitor = monitor
 
-    def init_from_ckpt(self, path, ignore_keys=list(['quantize.embedding.weight'])):
+    def init_from_ckpt(self, path, ignore_keys=list([])):
         # ['quantize.embedding.weight','quant_conv.weight','quant_conv.bias','post_quant_conv.weight','post_quant_conv.bias','encoder.conv_out.weight','encoder.conv_out.bias','decoder.conv_in.weight']
         sd = torch.load(path, map_location="cpu")["state_dict"]
         keys = list(sd.keys())
@@ -48,11 +51,11 @@ class VQModel(pl.LightningModule):
         # print("h space=", h.shape)
         h = self.quant_conv(h)
 
-        quant, emb_loss, info = self.quantize(h)
+        quant, emb_loss, info = self.quantize(h.permute(0,2,3,1).contiguous())
         return quant, emb_loss, info
 
     def decode(self, quant):
-        quant = self.post_quant_conv(quant)
+        quant = self.post_quant_conv(quant.permute(0,3,1,2).contiguous())
         dec = self.decoder(quant)
         return dec
 

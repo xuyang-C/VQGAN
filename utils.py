@@ -46,9 +46,9 @@ def load_data(args):
     dataset = torchvision.datasets.ImageFolder(root=args.dataset_path,
                                                transform=torchvision.transforms.Compose([
                                                    #    torchvision.transforms.Resize((28,28)),
-                                                   torchvision.transforms.CenterCrop((args.image_size, args.image_size)),
+                                                   torchvision.transforms.CenterCrop((args.image_size, args.image_size)), # (0,1)
                                                    torchvision.transforms.ToTensor(),
-                                                   # torchvision.transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+                                                   # torchvision.transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)), # (-1,1)
                                                ]))
     train_loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, num_workers=4)
     return train_loader
@@ -66,6 +66,7 @@ def load_test_data(args):
                                                transform=torchvision.transforms.Compose([
                                                    torchvision.transforms.CenterCrop((args.image_size, args.image_size)),
                                                    torchvision.transforms.ToTensor(),
+                                                   # torchvision.transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
                                                ]))
     test_loader = DataLoader(test_data, batch_size=args.batch_size, shuffle=False, num_workers=4)
     return test_loader
@@ -84,12 +85,25 @@ class FrameDataset(Dataset):
         self.root_dir = args.dataset_path
         self.transform = transform
         self.frame_groups = []
+        # Albumentations 预处理器
+        self.size = args.image_size if hasattr(args, 'image_size') else None
+        self.random_crop = args.random_crop if hasattr(args, 'random_crop') else False
+
+        if self.size is not None and self.size > 0:
+            self.rescaler = albumentations.SmallestMaxSize(max_size=self.size)
+            if not self.random_crop:
+                self.cropper = albumentations.CenterCrop(height=self.size, width=self.size)
+            else:
+                self.cropper = albumentations.RandomCrop(height=self.size, width=self.size)
+            self.preprocessor = albumentations.Compose([self.rescaler, self.cropper])
+        else:
+            self.preprocessor = lambda **kwargs: kwargs
 
         # 遍历文件夹，获取图像组
         # 使用os.walk遍历所有子目录
         for dirpath, dirnames, filenames in os.walk(self.root_dir):
             # 过滤出JPG图像
-            frames = sorted([os.path.join(dirpath, f) for f in filenames if f.endswith('.jpg')])
+            frames = sorted([os.path.join(dirpath, f) for f in filenames if f.endswith('.png')])
 
             # 创建连续的7帧图像组
             for i in range(len(frames) - args.num_frames):
@@ -98,9 +112,32 @@ class FrameDataset(Dataset):
     def __len__(self):
         return len(self.frame_groups)
 
+    def preprocess_image(self, image_path):
+        """
+        使用 ImagePaths 中的预处理算法处理单张图像。
+        """
+        image = Image.open(image_path)
+        if not image.mode == "RGB":
+            image = image.convert("RGB")
+        image = np.array(image).astype(np.uint8)
+        image = self.preprocessor(image=image)["image"]
+        image = (image / 127.5 - 1.0).astype(np.float32)
+        return image
+
     def __getitem__(self, idx):
         group = self.frame_groups[idx]
-        images = [Image.open(img_path).convert('RGB') for img_path in group]
+        # images = [Image.open(img_path).convert('RGB') for img_path in group]
+        # images = np.array([np.array(images[i]).astype(np.float32) for i in range(len(images))])  # 转为 numpy array
+        # images = images / 127.5 - 1.0  # 转换范围到 [-1, 1]
+        # images = torch.from_numpy(images).permute(0, 3, 1, 2)
+        images = []
+
+        for img_path in group:
+            try:
+                processed_image = self.preprocess_image(img_path)
+                images.append(torch.from_numpy(processed_image).permute(2, 0, 1))  # 转换为 PyTorch 格式
+            except Exception as e:
+                raise RuntimeError(f"Error loading image {img_path}: {e}")
 
         if self.transform:
             images = [self.transform(image) for image in images]
@@ -109,12 +146,11 @@ class FrameDataset(Dataset):
         images = torch.stack(images)
         return images
 
-def load_video_data(args):
+def load_video_data(args, shuffle=True):
     # 创建数据集实例
-    dataset = FrameDataset(args, transform=torchvision.transforms.Compose([torchvision.transforms.CenterCrop((args.image_size, args.image_size)),
-    torchvision.transforms.ToTensor(),]))
+    dataset = FrameDataset(args)
     # 创建数据加载器
-    data_loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, num_workers=4)
+    data_loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=shuffle, num_workers=4, drop_last=True)
     return data_loader
 
 def weights_init(m):

@@ -7,13 +7,12 @@ from pytorch_msssim import ms_ssim
 
 
 def load_images_from_folder(folder):
-    image_paths = []
-    for filename in os.listdir(folder):
-        if filename.lower().endswith('.jpg'):
-            img_path = os.path.join(folder, filename)
-            if os.path.isfile(img_path):
-                image_paths.append(img_path)
-    return image_paths
+    jpg_file = []
+    for root, dirs, files in os.walk(folder):
+        for file in files:
+            if file.endswith(".jpg"):
+                jpg_file.append(os.path.join(root, file))
+    return jpg_file
 
 
 def calculate_psnr(img1, img2):
@@ -65,6 +64,6 @@ def modify_path(img_path, folder1, folder2):
 
 
 # Example usage:
-folder1 = '/home/xuyang/VQGAN-pytorch/data/1ki58847CNs/frames/test/after5s/'
-folder2 = '/home/xuyang/VQGAN-pytorch/data/1ki58847CNs/frames/reconstruct/after5s/'
+folder1 = '/home/xuyang/VQGAN-pytorch/data/UCF50/HorseRiding/gt/'
+folder2 = '/home/xuyang/VQGAN-pytorch/data/UCF50/HorseRiding/recon/'
 main(folder1, folder2, modify_path)
