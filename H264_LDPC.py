@@ -260,9 +260,9 @@ def process_single_video(input_path: str, output_path: str, snr: float):
     diff_ratio = num_diff / original_length
 
     # 8. 重建视频
-    decoded_bytes = np.packbits(decoded_bits).tobytes()
-    with open(output_path, 'wb') as f:
-        f.write(decoded_bytes)
+    # decoded_bytes = np.packbits(decoded_bits).tobytes()
+    # with open(output_path, 'wb') as f:
+    #     f.write(decoded_bytes)
 
     print(f"处理完成: {os.path.basename(input_path)} -> {os.path.basename(output_path)}")
     print(f"当前文件差异数: {num_diff}，差异率: {diff_ratio:.4%}\n")
@@ -276,11 +276,11 @@ begin_time = time.time()
 
 # LDPC_img_dir("/home/xuyang/VQGAN-pytorch/data/UCF50/HorseRiding/gtres/")
 # ldpc_video_process("/home/xuyang/taming-transformers-master/data/HorseRiding/Horse_gt/74kb/v_HorseRiding_g25_c23.avi", "/home/xuyang/taming-transformers-master/data/HorseRiding/output_snr6.mp4", snr=6)
-snr=0
+snr=-20
 print(f"Test with snr: {snr}")
 process_ldpc_videos(
-        input_dir="/home/xuyang/taming-transformers-master/data/HorseRiding/Horse_gt/h266_44kb_test/",
-        output_dir=f"/home/xuyang/taming-transformers-master/data/HorseRiding/h266_44kb_test_snr{snr}",
+        input_dir="/home/xuyang/taming-transformers-master/data/HorseRiding/Horse_gt/44kb_test/",
+        output_dir=f"/home/xuyang/taming-transformers-master/data/HorseRiding/44kb_test_snr{snr}",
         snr=snr)
 end_time = time.time()
 print(f"Time elapsed: {end_time - begin_time:.2f}s")

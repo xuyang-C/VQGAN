@@ -7,6 +7,8 @@ from taming.models.vqgan import VQModel as VQGAN
 from vivit import ViViT
 from st_transformer import SpatioTemporalTransformer
 from scipy.stats import truncnorm
+# import torchac
+import time
 class VQGANTransformer(nn.Module):
     def __init__(self, args):
         super(VQGANTransformer, self).__init__()
@@ -14,7 +16,7 @@ class VQGANTransformer(nn.Module):
         self.sos_token = args.sos_token
         self.latent_dim = args.latent_dim
         self.vqgan = self.load_vqgan(args)
-
+        self.decode_time=0
         transformer_config = {
             "vocab_size": args.num_codebook_vectors,
             "block_size": 256,
@@ -39,7 +41,7 @@ class VQGANTransformer(nn.Module):
 
 
         # self.transformer = GPT(**transformer_config)
-        self.transformer = ViViT(num_frames=args.num_frames+1, dim=768, token_size=15, heads=12, depth=10, scale_dim=4,
+        self.transformer = ViViT(num_frames=args.num_frames+1, dim=768, token_size=15, heads=12, depth=5, scale_dim=4,
                                  codebook_size=args.num_codebook_vectors, emb_dropout=0.1)
         # self.transformer = SpatioTemporalTransformer(d_model=768, num_heads=12, num_layers=16,num_frames=args.num_frames+1, num_nodes=int(args.image_size/16)**2*2, vocab_size=args.num_codebook_vectors)
 
@@ -93,10 +95,10 @@ class VQGANTransformer(nn.Module):
         indices = all_indices # batch, frames, h, w, n_codebook h*w=225 2个codebook
         if indices.dim() < 5:
             indices = indices.unsqueeze(-1)
-        device = 'cuda' if torch.cuda.is_available() else 'cpu'
-        loss_rate = truncnorm.rvs(self.a_std, self.b_std, loc=self.mu, scale=self.sigma)
+        # device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        # loss_rate = truncnorm.rvs(self.a_std, self.b_std, loc=self.mu, scale=self.sigma)
         # loss_rate = torch.rand(1)*0.6
-        loss_rate = 0.0143
+        loss_rate = 0.
         # 为每个样本生成独立掩码
         b,t,h,w,n = indices.shape
         # final_mask = torch.stack([
@@ -142,23 +144,53 @@ class VQGANTransformer(nn.Module):
         indices_reshape = indices.view(b,t,h*w*n)
         target = target.squeeze().view(b,h*w*n)
         mask = mask.view(b,t,h*w*n)
+        # start_time = time.time()
         logits = self.transformer(new_indices, mask)
-        # mask_last = mask[:,-1].unsqueeze(-1).expand(-1,-1,logits.size(2)) # 取最后一帧的mask
         mask_last = mask[:, -1]
-        # mask_last_reverse = 1 - mask_last
         lost_logits = logits[:,-1][mask_last==0] # 只保留丢失的最后一帧labels用于更新
-        # lost_logits = lost_logits.view(-1, logits.size(2))
         lost_target = target[mask_last==0] # 只保留丢失的target indices
-        # lost_target = lost_target.view(-1,1)
         pre_labels = torch.argmax(logits,dim=-1)[:,-1]
-        # mask_labels = mask[:,-1] * target.squeeze() + (1 - mask)[:,-1] * pre_labels # 预测的labels替换丢失的labels
-
         mask_labels = torch.where(mask_last==0,pre_labels, target) # 对于 mask_last 中的每个元素： 如果该元素等于 0，则从 pre_labels 中提取对应位置的元素，放入 mask_labels。 如果该元素不等于 0，则从 target 中提取对应位置的元素，放入 mask_labels
+        # byte_stream_latent_list = []
+        # for i in range(x.shape[0]):  # 单codebook时
+        #     byte_stream_latent = len(self.compress_latent(mask_labels[i].unsqueeze(0).contiguous()))
+        #     byte_stream_latent_list.append(byte_stream_latent)
         correct = (pre_labels == target).float()  # (B, seq_len)
         masked_accuracy = (correct * (mask_last == 0)).sum() / (mask_last == 0).sum()
         reconstruct = self.z_to_image_res(mask_labels,p1=h,p2=w,quant_emb=self.latent_dim)
+        # end_time = time.time()
+        # self.decode_time+=end_time-start_time
+        # return 0,0,0,0,0
         return lost_logits, lost_target, reconstruct, mask_last, masked_accuracy
+    def compute_cdf_prob(self, codebook_size, target_shape, prob):
+        """Obtain CDF from uniform distribution, cast to target_shape"""
+        b, h, w = target_shape
+        # prob_per_entry = 1.0 / codebook_size
 
+        # Compute the cumulative sum starting from 0
+        # cdf = torch.cumsum(torch.full((codebook_size,), prob_per_entry), dim=0)
+        cdf = torch.cumsum(prob, dim=0)
+        cdf = torch.cat([torch.zeros(1), cdf])
+        cdf = cdf.view(1, 1, 1, -1).expand(b, h, w, -1)
+        cdf = cdf.clone()
+        cdf[..., -1] = 1.0
+        return cdf
+
+    def compress_latent(self, z_hat_indices):
+        """Compress hyper-latent to bytes using torchac."""
+        cfg_cs = self.n_embed  # cfg_cs只与codebook大小有关
+
+        counts = torch.bincount(z_hat_indices.reshape(-1), minlength=cfg_cs).to('cpu') # 统计z_hat_indices每个符号出现的次数，输出长度为cfg_cs
+        # print(counts)
+        # print(z_hat_indices)
+        # print("count shape:",counts.shape, "indices shape:",z_hat_indices.shape)
+        # Convert counts to probabilities
+        probabilities = counts / counts.sum()  # 统计每种符号出现概率
+        cdf = self.compute_cdf_prob(cfg_cs, z_hat_indices.shape, probabilities)
+        # print("cdf shape:", cdf.shape)
+        z_hat_indices = z_hat_indices.to(torch.int16).to('cpu')
+        # sys.exit()
+        return torchac.encode_float_cdf(cdf, z_hat_indices, check_input_bounds=True)
     def create_drop_mask(self, shape, drop_rate):
         """
         Args:
